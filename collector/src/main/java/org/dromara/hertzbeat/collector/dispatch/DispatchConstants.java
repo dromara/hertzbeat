@@ -116,6 +116,10 @@ public interface DispatchConstants {
      */
     String PROTOCOL_POP3 = "pop3";
     /**
+     * protocol influxdb
+     */
+    String PROTOCOL_INFLUXDB = "influxdb";
+    /**
      * protocol http_sd
      */
     String PROTOCOL_HTTP_SD = "httpsd";

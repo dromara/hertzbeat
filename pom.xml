@@ -86,6 +86,7 @@
         <iotdb-session.version>0.13.3</iotdb-session.version>
         <commons-collections4.version>4.4</commons-collections4.version>
         <commons-net>3.10.0</commons-net>
+        <influddb.vesion>7.0.0</influddb.vesion>
     </properties>
 
     <dependencyManagement>
@@ -323,6 +324,12 @@
                 <artifactId>netty-all</artifactId>
                 <version>${netty.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.influxdb</groupId>
+                <artifactId>influxdb-client-java</artifactId>
+                <version>${influddb.vesion}</version>
+            </dependency>
+
         </dependencies>
     </dependencyManagement>
 
