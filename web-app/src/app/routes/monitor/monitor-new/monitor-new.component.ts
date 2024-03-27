@@ -4,9 +4,11 @@ import { ActivatedRoute, ParamMap, Router } from '@angular/router';
 import { I18NService } from '@core';
 import { ALAIN_I18N_TOKEN, TitleService } from '@delon/theme';
 import { NzNotificationService } from 'ng-zorro-antd/notification';
+import { NzUploadFile } from 'ng-zorro-antd/upload';
 import { switchMap } from 'rxjs/operators';
 
 import { Collector } from '../../../pojo/Collector';
+import { Grafana } from '../../../pojo/Grafana';
 import { Message } from '../../../pojo/Message';
 import { Monitor } from '../../../pojo/Monitor';
 import { Param } from '../../../pojo/Param';
@@ -29,6 +31,7 @@ export class MonitorNewComponent implements OnInit {
   advancedParamDefines!: ParamDefine[];
   advancedParams!: Param[];
   monitor!: Monitor;
+  grafana!: Grafana;
   collectors!: Collector[];
   collector: string = '';
   detected: boolean = false;
@@ -51,6 +54,7 @@ export class MonitorNewComponent implements OnInit {
   ) {
     this.monitor = new Monitor();
     this.monitor.tags = [];
+    this.monitor.grafana = new Grafana();
   }
 
   ngOnInit(): void {
@@ -190,6 +194,7 @@ export class MonitorNewComponent implements OnInit {
       detected: this.detected,
       collector: this.collector,
       monitor: this.monitor,
+      grafana: this.monitor.grafana,
       params: this.params.concat(this.advancedParams)
     };
     if (this.detected) {
@@ -354,4 +359,18 @@ export class MonitorNewComponent implements OnInit {
     return rangeArray[index];
   }
   // end tag model
+
+  //start grafana
+  handleTemplateInput(event: any): any {
+    if (event.file && event.file.originFileObj) {
+      const fileReader = new FileReader();
+      fileReader.readAsText(event.file.originFileObj, 'UTF-8');
+      fileReader.onload = () => {
+        this.monitor.grafana.template = fileReader.result as string;
+      };
+      fileReader.onerror = error => {
+        console.log(error);
+      };
+    }
+  }
 }

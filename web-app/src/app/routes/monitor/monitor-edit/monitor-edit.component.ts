@@ -4,10 +4,12 @@ import { ActivatedRoute, ParamMap, Router } from '@angular/router';
 import { I18NService } from '@core';
 import { ALAIN_I18N_TOKEN, TitleService } from '@delon/theme';
 import { NzNotificationService } from 'ng-zorro-antd/notification';
+import { NzUploadFile } from 'ng-zorro-antd/upload';
 import { throwError } from 'rxjs';
 import { finalize, switchMap } from 'rxjs/operators';
 
 import { Collector } from '../../../pojo/Collector';
+import { Grafana } from '../../../pojo/Grafana';
 import { Message } from '../../../pojo/Message';
 import { Monitor } from '../../../pojo/Monitor';
 import { Param } from '../../../pojo/Param';
@@ -67,6 +69,9 @@ export class MonitorEditComponent implements OnInit {
         switchMap((message: Message<any>) => {
           if (message.code === 0) {
             this.monitor = message.data.monitor;
+            if (this.monitor.grafana == undefined) {
+              this.monitor.grafana = new Grafana();
+            }
             this.collector = message.data.collector == null ? '' : message.data.collector;
             this.titleSvc.setTitleByI18n(`monitor.app.${this.monitor.app}`);
             if (message.data.params != null) {
@@ -212,6 +217,7 @@ export class MonitorEditComponent implements OnInit {
       detected: this.detected,
       monitor: this.monitor,
       collector: this.collector,
+      grafana: this.monitor.grafana,
       params: this.params.concat(this.advancedParams)
     };
     if (this.detected) {
@@ -368,4 +374,18 @@ export class MonitorEditComponent implements OnInit {
     }
   }
   // end tag model
+
+  //start grafana
+  handleTemplateInput(event: any): any {
+    if (event.file && event.file.originFileObj) {
+      const fileReader = new FileReader();
+      fileReader.readAsText(event.file.originFileObj, 'UTF-8');
+      fileReader.onload = () => {
+        this.monitor.grafana.template = fileReader.result as string;
+      };
+      fileReader.onerror = error => {
+        console.log(error);
+      };
+    }
+  }
 }
