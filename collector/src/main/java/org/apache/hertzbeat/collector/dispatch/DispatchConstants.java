@@ -128,6 +128,10 @@ public interface DispatchConstants {
      */
     String PROTOCOL_REDFISH = "redfish";
     /**
+     * protocol http sd v1
+     */
+    String PROTOCOL_HTTP_SD_V1 = "httpsdv1";
+    /**
      * protocol imap
      */
     String PROTOCOL_IMAP = "imap";

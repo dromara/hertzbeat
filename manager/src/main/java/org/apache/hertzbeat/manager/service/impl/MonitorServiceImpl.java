@@ -18,10 +18,13 @@
 package org.apache.hertzbeat.manager.service.impl;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import jakarta.servlet.http.HttpServletResponse;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -38,6 +41,7 @@ import org.apache.hertzbeat.common.constants.CommonConstants;
 import org.apache.hertzbeat.common.entity.job.Configmap;
 import org.apache.hertzbeat.common.entity.job.Job;
 import org.apache.hertzbeat.common.entity.job.Metrics;
+import org.apache.hertzbeat.common.entity.job.protocol.CommonRequestProtocol;
 import org.apache.hertzbeat.common.entity.manager.Collector;
 import org.apache.hertzbeat.common.entity.manager.CollectorMonitorBind;
 import org.apache.hertzbeat.common.entity.manager.Monitor;
@@ -45,6 +49,7 @@ import org.apache.hertzbeat.common.entity.manager.Param;
 import org.apache.hertzbeat.common.entity.manager.ParamDefine;
 import org.apache.hertzbeat.common.entity.manager.Tag;
 import org.apache.hertzbeat.common.entity.message.CollectRep;
+import org.apache.hertzbeat.common.entity.sd.ServiceDiscoveryProtocol;
 import org.apache.hertzbeat.common.support.event.MonitorDeletedEvent;
 import org.apache.hertzbeat.common.util.AesUtil;
 import org.apache.hertzbeat.common.util.IntervalExpressionUtil;
@@ -89,7 +94,6 @@ public class MonitorServiceImpl implements MonitorService {
     private static final Long MONITOR_ID_TMP = 1000000000L;
 
     public static final String HTTP = "http://";
-    
     public static final String HTTPS = "https://";
     public static final String BLANK = "";
     public static final String PATTERN_HTTP = "(?i)http://";
@@ -137,88 +141,35 @@ public class MonitorServiceImpl implements MonitorService {
     @Override
     @Transactional(readOnly = true)
     public void detectMonitor(Monitor monitor, List<Param> params, String collector) throws MonitorDetectException {
-        Long monitorId = monitor.getId();
-        if (monitorId == null || monitorId == 0) {
-            monitorId = MONITOR_ID_TMP;
-        }
-        Job appDefine = appService.getAppDefine(monitor.getApp());
-        if (CommonConstants.PROMETHEUS.equals(monitor.getApp())) {
-            appDefine.setApp(CommonConstants.PROMETHEUS_APP_PREFIX + monitor.getName());
-        }
-        appDefine.setMonitorId(monitorId);
-        appDefine.setCyclic(false);
-        appDefine.setTimestamp(System.currentTimeMillis());
-        List<Configmap> configmaps = params.stream().map(param ->
-                new Configmap(param.getField(), param.getParamValue(), param.getType())).collect(Collectors.toList());
-        appDefine.setConfigmap(configmaps);
-        // To detect availability, you only need to collect the set of availability metrics with a priority of 0.
-        List<Metrics> availableMetrics = appDefine.getMetrics().stream()
-                .filter(item -> item.getPriority() == 0).collect(Collectors.toList());
-        appDefine.setMetrics(availableMetrics);
-        List<CollectRep.MetricsData> collectRep;
-        if (collector != null) {
-            collectRep = collectJobScheduling.collectSyncJobData(appDefine, collector);
+        final Optional<Param> sdParam = getSdParam(params);
+
+        if (sdParam.isPresent()) {
+            collectOneTimeSdData(monitor, collector, sdParam.get());
         } else {
-            collectRep = collectJobScheduling.collectSyncJobData(appDefine);
-        }
-        // If the detection result fails, a detection exception is thrown
-        if (collectRep == null || collectRep.isEmpty()) {
-            throw new MonitorDetectException("Collect Timeout No Response");
-        }
-        if (collectRep.get(0).getCode() != CollectRep.Code.SUCCESS) {
-            throw new MonitorDetectException(collectRep.get(0).getMsg());
+            detectMonitorDirectly(monitor, params, collector);
         }
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void addMonitor(Monitor monitor, List<Param> params, String collector) throws RuntimeException {
-        // Apply for monitor id
-        long monitorId = SnowFlakeIdGenerator.generateId();
-        // Init Set Default Tags: monitorId monitorName app
-        List<Tag> tags = monitor.getTags();
-        if (tags == null) {
-            tags = new LinkedList<>();
-            monitor.setTags(tags);
-        }
-        tags.add(Tag.builder().name(CommonConstants.TAG_MONITOR_ID).tagValue(String.valueOf(monitorId)).type((byte) 0).build());
-        tags.add(Tag.builder().name(CommonConstants.TAG_MONITOR_NAME).tagValue(String.valueOf(monitor.getName())).type((byte) 0).build());
-        // Construct the collection task Job entity     
-        Job appDefine = appService.getAppDefine(monitor.getApp());
-        if (CommonConstants.PROMETHEUS.equals(monitor.getApp())) {
-            appDefine.setApp(CommonConstants.PROMETHEUS_APP_PREFIX + monitor.getName());
-        }
-        appDefine.setMonitorId(monitorId);
-        appDefine.setInterval(monitor.getIntervals());
-        appDefine.setCyclic(true);
-        appDefine.setTimestamp(System.currentTimeMillis());
-        List<Configmap> configmaps = params.stream().map(param -> {
-            param.setMonitorId(monitorId);
-            return new Configmap(param.getField(), param.getParamValue(), param.getType());
-        }).collect(Collectors.toList());
-        appDefine.setConfigmap(configmaps);
+        final Optional<Param> sdParam = getSdParam(params);
+        if (sdParam.isPresent()) {
+            // collect sd data through one-time job
+            List<CollectRep.MetricsData> sdDataList = collectOneTimeSdData(monitor, collector, sdParam.get());
+            List<Param> paramsWithoutSd = removeSdParam(params);
+            final CollectRep.MetricsData sdData = sdDataList.get(0);
+            final List<CollectRep.ValueRow> sdValueList = sdData.getValuesList();
 
-        long jobId = collector == null ? collectJobScheduling.addAsyncCollectJob(appDefine, null) :
-                collectJobScheduling.addAsyncCollectJob(appDefine, collector);
-
-        try {
-            if (collector != null) {
-                CollectorMonitorBind collectorMonitorBind = CollectorMonitorBind.builder()
-                        .collector(collector)
-                        .monitorId(monitorId)
-                        .build();
-                collectorMonitorBindDao.save(collectorMonitorBind);
+            // batch create task
+            for (CollectRep.ValueRow valueRow : sdValueList) {
+                addAndSaveMonitorJob(monitor.clone(), paramsWithoutSd, collector, valueRow.getColumns(0), valueRow.getColumns(1));
             }
-            monitor.setId(monitorId);
-            monitor.setJobId(jobId);
-            monitor.setStatus(CommonConstants.MONITOR_UP_CODE);
-            monitorDao.save(monitor);
-            paramDao.saveAll(params);
-        } catch (Exception e) {
-            log.error("Error while adding monitor: {}", e.getMessage(), e);
-            collectJobScheduling.cancelAsyncCollectJob(jobId);
-            throw new MonitorDatabaseException(e.getMessage());
+
+            return;
         }
+
+        addAndSaveMonitorJob(monitor, params, collector, null, null);
     }
 
     @Override
@@ -831,5 +782,206 @@ public class MonitorServiceImpl implements MonitorService {
         return tags.stream()
                 .filter(tag -> !(tag.getName().equals(CommonConstants.TAG_MONITOR_ID) || tag.getName().equals(CommonConstants.TAG_MONITOR_NAME)))
                 .collect(Collectors.toList());
+    }
+
+    private Optional<Param> getSdParam(List<Param> params) {
+        return params.stream()
+                .filter(param -> StringUtils.hasText(param.getField()) && StringUtils.hasText(param.getParamValue()))
+                .filter(param -> Objects.nonNull(ServiceDiscoveryProtocol.Type.getType(param.getField())))
+                .findFirst();
+    }
+
+    private List<Param> removeSdParam(List<Param> params) {
+        return params.stream()
+                .filter(param -> Objects.isNull(ServiceDiscoveryProtocol.Type.getType(param.getField())))
+                .collect(Collectors.toList());
+    }
+
+    private List<CollectRep.MetricsData> collectOneTimeSdData(Monitor monitor, String collector, Param sdParam) {
+        Long monitorId = monitor.getId();
+        if (monitorId == null || monitorId == 0) {
+            monitorId = MONITOR_ID_TMP;
+        }
+        Job appDefine = appService.getAppDefine(monitor.getApp());
+        if (CommonConstants.PROMETHEUS.equals(monitor.getApp())) {
+            appDefine.setApp(CommonConstants.PROMETHEUS_APP_PREFIX + monitor.getName());
+        }
+        appDefine.setMonitorId(monitorId);
+        appDefine.setCyclic(false);
+        appDefine.setTimestamp(System.currentTimeMillis());
+        final Job sdJob = constructSdJob(appDefine, sdParam);
+        List<CollectRep.MetricsData> collectRep;
+        if (collector != null) {
+            collectRep = collectJobScheduling.collectSyncJobData(sdJob, collector);
+        } else {
+            collectRep = collectJobScheduling.collectSyncJobData(sdJob);
+        }
+        // If the detection result fails, a detection exception is thrown
+        if (collectRep == null || collectRep.isEmpty()) {
+            throw new MonitorDetectException("Collect Timeout No Response");
+        }
+        if (collectRep.get(0).getCode() != CollectRep.Code.SUCCESS) {
+            throw new MonitorDetectException(collectRep.get(0).getMsg());
+        }
+
+        return collectRep;
+    }
+
+    private Job constructSdJob(Job appDefine, Param sdParam) {
+        final Job sdJob = appDefine.clone();
+        List<Metrics> metricsList = Lists.newArrayList();
+        Map<String, String> i18n = Maps.newHashMap();
+        i18n.put("zh-CN", "监控目标");
+        i18n.put("en-US", "Monitor Target");
+        List<Metrics.Field> fields = Lists.newArrayList();
+        fields.add(Metrics.Field.builder()
+                        .field("host")
+                        .type(CommonConstants.TYPE_STRING)
+                        .i18n(constructSdFieldI18n("主机", "host"))
+                        .build());
+        fields.add(Metrics.Field.builder()
+                        .field("port")
+                        .type(CommonConstants.TYPE_STRING)
+                        .i18n(constructSdFieldI18n("端口", "port"))
+                        .build());
+        metricsList.add(Metrics.builder()
+                .name("target")
+                .fields(fields)
+                .i18n(i18n)
+                .protocol(DispatchConstants.PROTOCOL_HTTP_SD_V1)
+                .sdProtocol(ServiceDiscoveryProtocol.builder()
+                        .sdSource(sdParam.getParamValue())
+                        .type(ServiceDiscoveryProtocol.Type.getType(sdParam.getField()))
+                        .build())
+                .build());
+
+        sdJob.setMetrics(metricsList);
+        sdJob.setConfigmap(Lists.newArrayList(new Configmap(sdParam.getField(), sdParam.getParamValue(), sdParam.getType())));
+        return sdJob;
+    }
+
+    private Map<String, String> constructSdFieldI18n(String zh, String en) {
+        Map<String, String> i18n = Maps.newHashMap();
+        i18n.put("zh-CN", zh);
+        i18n.put("en-US", en);
+        return i18n;
+    }
+
+    private void detectMonitorDirectly(Monitor monitor, List<Param> params, String collector) {
+        Long monitorId = monitor.getId();
+        if (monitorId == null || monitorId == 0) {
+            monitorId = MONITOR_ID_TMP;
+        }
+        Job appDefine = appService.getAppDefine(monitor.getApp());
+        if (CommonConstants.PROMETHEUS.equals(monitor.getApp())) {
+            appDefine.setApp(CommonConstants.PROMETHEUS_APP_PREFIX + monitor.getName());
+        }
+        appDefine.setMonitorId(monitorId);
+        appDefine.setCyclic(false);
+        appDefine.setTimestamp(System.currentTimeMillis());
+        List<Configmap> configmaps = params.stream().map(param ->
+                new Configmap(param.getField(), param.getParamValue(), param.getType())).collect(Collectors.toList());
+        appDefine.setConfigmap(configmaps);
+        // To detect availability, you only need to collect the set of availability metrics with a priority of 0.
+        List<Metrics> availableMetrics = appDefine.getMetrics().stream()
+                .filter(item -> item.getPriority() == 0).collect(Collectors.toList());
+        appDefine.setMetrics(availableMetrics);
+        List<CollectRep.MetricsData> collectRep;
+        if (collector != null) {
+            collectRep = collectJobScheduling.collectSyncJobData(appDefine, collector);
+        } else {
+            collectRep = collectJobScheduling.collectSyncJobData(appDefine);
+        }
+        // If the detection result fails, a detection exception is thrown
+        if (collectRep == null || collectRep.isEmpty()) {
+            throw new MonitorDetectException("Collect Timeout No Response");
+        }
+        if (collectRep.get(0).getCode() != CollectRep.Code.SUCCESS) {
+            throw new MonitorDetectException(collectRep.get(0).getMsg());
+        }
+    }
+
+    private void addAndSaveMonitorJob(Monitor monitor, List<Param> params, String collector,
+                                      String detectedHost, String detectedPort) {
+        // Apply for monitor id
+        long monitorId = SnowFlakeIdGenerator.generateId();
+        // Init Set Default Tags: monitorId monitorName app
+        List<Tag> tags = monitor.getTags();
+        if (tags == null) {
+            tags = new LinkedList<>();
+            monitor.setTags(tags);
+        }
+        tags.add(Tag.builder().name(CommonConstants.TAG_MONITOR_ID).tagValue(String.valueOf(monitorId)).type(CommonConstants.TAG_TYPE_AUTO_GENERATE).build());
+        tags.add(Tag.builder().name(CommonConstants.TAG_MONITOR_NAME).tagValue(String.valueOf(monitor.getName())).type(CommonConstants.TAG_TYPE_AUTO_GENERATE).build());
+        // Construct the collection task Job entity
+        Job appDefine = appService.getAppDefine(monitor.getApp());
+        if (CommonConstants.PROMETHEUS.equals(monitor.getApp())) {
+            appDefine.setApp(CommonConstants.PROMETHEUS_APP_PREFIX + monitor.getName());
+        }
+        appDefine.setMonitorId(monitorId);
+        appDefine.setInterval(monitor.getIntervals());
+        appDefine.setCyclic(true);
+        appDefine.setTimestamp(System.currentTimeMillis());
+        resetMetricsCommonField(monitor, appDefine, detectedHost, detectedPort);
+
+        List<Configmap> configmaps = params.stream().map(param -> {
+            param.setMonitorId(monitorId);
+            return new Configmap(param.getField(), param.getParamValue(), param.getType());
+        }).collect(Collectors.toList());
+        appDefine.setConfigmap(configmaps);
+
+        long jobId = collector == null ? collectJobScheduling.addAsyncCollectJob(appDefine, null) :
+                collectJobScheduling.addAsyncCollectJob(appDefine, collector);
+
+        try {
+            if (collector != null) {
+                CollectorMonitorBind collectorMonitorBind = CollectorMonitorBind.builder()
+                        .collector(collector)
+                        .monitorId(monitorId)
+                        .build();
+                collectorMonitorBindDao.save(collectorMonitorBind);
+            }
+            monitor.setId(monitorId);
+            monitor.setJobId(jobId);
+            monitor.setStatus(CommonConstants.MONITOR_UP_CODE);
+            monitorDao.save(monitor);
+            paramDao.saveAll(params);
+        } catch (Exception e) {
+            log.error("Error while adding monitor: {}", e.getMessage(), e);
+            collectJobScheduling.cancelAsyncCollectJob(jobId);
+            throw new MonitorDatabaseException(e.getMessage());
+        }
+    }
+
+    private void resetMetricsCommonField(Monitor monitor, Job appDefine, String detectedHost, String detectedPort) {
+        if (org.apache.commons.lang3.StringUtils.isAnyBlank(detectedHost, detectedPort)) {
+            return;
+        }
+
+        for (Metrics metric : appDefine.getMetrics()) {
+            Arrays.stream(metric.getClass().getDeclaredFields())
+                    .filter(field -> metric.getProtocol().equalsIgnoreCase(field.getName()))
+                    .findFirst()
+                    .ifPresent(field -> {
+                        field.setAccessible(true);
+                        final Object obj;
+                        try {
+                            obj = field.get(metric);
+                            if (obj instanceof CommonRequestProtocol protocol) {
+                                protocol.setHost(detectedHost);
+                                protocol.setPort(detectedPort);
+                            }
+                        } catch (IllegalAccessException exception) {
+                            log.warn("Not such field {}", field.getName());
+                        }
+                    });
+        }
+
+        monitor.setHost(detectedHost);
+        monitor.getTags().add(Tag.builder()
+                .name(CommonConstants.TAG_MONITOR_HOST)
+                .tagValue(String.valueOf(detectedHost))
+                .type(CommonConstants.TAG_TYPE_AUTO_GENERATE)
+                .build());
     }
 }

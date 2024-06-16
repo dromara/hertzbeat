@@ -55,6 +55,7 @@ import org.apache.hertzbeat.common.entity.job.protocol.TelnetProtocol;
 import org.apache.hertzbeat.common.entity.job.protocol.UdpProtocol;
 import org.apache.hertzbeat.common.entity.job.protocol.WebsocketProtocol;
 import org.apache.hertzbeat.common.entity.message.CollectRep;
+import org.apache.hertzbeat.common.entity.sd.ServiceDiscoveryProtocol;
 
 /**
  * Details of the monitoring metrics collected
@@ -216,6 +217,10 @@ public class Metrics {
      * Monitoring configuration information using the public ngql protocol
      */
     private NgqlProtocol ngql;
+    /**
+     * Collect sd data protocol
+     */
+    private ServiceDiscoveryProtocol sdProtocol;
     /**
      * Monitoring configuration information using the public imap protocol
      */
